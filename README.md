@@ -12,10 +12,18 @@
 
 Это не production-код и не часть Nova. Задача — проверить механику и отрефайнить API.
 
+![UI](docs/ui.png)
+
+Больше деталей:
+
+- [Architecture and invariants](docs/architecture.md)
+- [Benchmark](docs/benchmark.md) — 20 коротких runs завершаются, пока long action ещё `running`.
+
 ## Запуск
 
 ```powershell
-cd C:\Users\ruden\Documents\GitHub\async-agent-demo
+git clone https://github.com/StesNiash/async-agent-demo.git
+cd async-agent-demo
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[test]"
@@ -90,6 +98,8 @@ app/engine.py  worker, pause/resume, heartbeat, action completion
 app/model.py   детерминированная mock-модель
 app/tools.py   mock_echo, mock_compile, mock_manual, mock_fail
 app/main.py    FastAPI + SSE + минимальный UI
+bench/         scheduler-level benchmark
+docs/          architecture, invariants, benchmark, UI screenshot
 ```
 
 ### Инварианты
@@ -97,11 +107,18 @@ app/main.py    FastAPI + SSE + минимальный UI
 1. `runs.messages` — точный transcript для LLM. Его нельзя пересобирать через retrieval, пока run ждёт tool result.
 2. `actions` живут отдельно от run. Action не имеет timeout.
 3. `wake_at` — таймаут ожидания run, а не инструмента.
-4. Результат action добавляет `tool`-сообщение с `tool_call_id` и продолжает run.
-5. Heartbeat добавляет `system`-сообщение, но не завершает run и не трогает action.
+4. Обычный результат action добавляет `tool`-сообщение с `tool_call_id`. Если у call уже был interim result, поздний финальный результат добавляется независимым `system`-текстом `TOOL RESULT (late)`.
+5. Heartbeat сначала добавляет interim `tool`-результат для pending call, затем `system`-сообщение. Action при этом не трогается.
 6. Уведомление во время ожидания будит тот же run: сначала interim `tool`-результат, затем `user`-сообщение.
-7. Поздний финальный результат добавляется как независимый `system`-текст, потому что `call_id` уже получил interim `tool`-результат.
-8. Старые `memory`-записи не переписываются.
+7. Старые `memory`-записи не переписываются.
+
+### Benchmark
+
+```powershell
+python bench/bench_async_actions.py --runs 20 --tool-seconds 5
+```
+
+Локальный результат: sync baseline `7486 ms`, async `2489 ms` (`3.01x`), при этом long action всё ещё `running`, а все 20 коротких runs уже `done`. Подробности и ограничения — в [docs/benchmark.md](docs/benchmark.md).
 
 ## Ограничение
 
@@ -120,5 +137,6 @@ pytest -q
 - heartbeat не убивает инструмент;
 - ошибка инструмента;
 - несколько одновременных tool call;
+- notification в тот же run с interim `tool` и поздним `TOOL RESULT (late)`;
 - append-only memory;
 - HTTP API + manual completion.
