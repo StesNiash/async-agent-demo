@@ -55,6 +55,29 @@ def _tool_summary(messages: list[dict]) -> str:
     return "; ".join(parts)
 
 
+def _call_parts(call: dict) -> tuple[str, str, dict]:
+    """Accept both internal and already-serialized OpenAI tool call shapes."""
+
+    function = call.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        raw_args = function.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except (TypeError, ValueError):
+            args = {"_raw_arguments": raw_args}
+    else:
+        name = call.get("name")
+        args = call.get("args")
+    if not name:
+        raise ValueError(f"assistant tool_call has no function name: {call!r}")
+    return (
+        call.get("id") or "call_" + uuid.uuid4().hex[:10],
+        name,
+        args if isinstance(args, dict) else {"value": args},
+    )
+
+
 def _openai_messages(messages: list[dict]) -> list[dict]:
     out: list[dict] = []
     for message in messages:
@@ -67,16 +90,16 @@ def _openai_messages(messages: list[dict]) -> list[dict]:
             if message.get("tool_calls"):
                 item["tool_calls"] = [
                     {
-                        "id": call.get("id") or "call_" + uuid.uuid4().hex[:10],
+                        "id": call_id,
                         "type": "function",
                         "function": {
-                            "name": call.get("name"),
-                            "arguments": json.dumps(
-                                call.get("args") or {}, ensure_ascii=False
-                            ),
+                            "name": name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
                         },
                     }
-                    for call in message["tool_calls"]
+                    for call_id, name, args in (
+                        _call_parts(call) for call in message["tool_calls"]
+                    )
                 ]
             out.append(item)
         elif role == "tool":

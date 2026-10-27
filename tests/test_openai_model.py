@@ -138,6 +138,12 @@ async def test_openai_model_drives_engine_tool_call(tmp_path):
                     }]
                 },
             )
+        payload = json.loads(request.content)
+        assistant = next(m for m in payload["messages"] if m["role"] == "assistant")
+        assert assistant["tool_calls"][0]["function"]["name"] == "mock_echo"
+        assert json.loads(
+            assistant["tool_calls"][0]["function"]["arguments"]
+        ) == {"text": "from-real-shape"}
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": "echo finished", "tool_calls": []}}]},
