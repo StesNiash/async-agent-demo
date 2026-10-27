@@ -89,12 +89,49 @@ async def test_heartbeat_wakes_run_but_does_not_timeout_tool(engine):
     assert store.get_action(action["id"])["status"] == "running"
     run = store.get_run(run_id)
     assert run["status"] in ("waiting", "ready", "generating")
+    assert not any(
+        m.get("role") == "system" and "HEARTBEAT" in m.get("content", "")
+        for m in run["messages"]
+    )
+    assert any(
+        m.get("role") == "system" and "No new events" in m.get("content", "")
+        for m in run["messages"]
+    )
 
     await eng.complete_action(action["id"], result={"manual": "after-heartbeat"})
     done = await eng.wait_for_run(run_id, timeout=3)
     assert done["status"] == "done"
     assert "after-heartbeat" in (done["result"] or "")
     assert any(e["type"] == "heartbeat" for e in store.get_events(run_id))
+
+
+@pytest.mark.asyncio
+async def test_server_action_stays_running_without_exit_code(engine):
+    eng, store = engine
+    run_id = await eng.create_run("start a server via bash", heartbeat_interval=0.08)
+    await wait_until(lambda: store.get_run(run_id)["status"] == "waiting")
+
+    action = store.get_actions(run_id)[0]
+    assert action["tool"] == "mock_server"
+    assert action["status"] == "running"
+    assert action["result"] is None
+
+    # Heartbeats keep waking the run (and creating interim tool results), but
+    # the server action must not time out or report an exit code.
+    await wait_until(lambda: [e for e in store.get_events(run_id) if e["type"] == "heartbeat"])
+    await asyncio.sleep(0.2)
+    assert store.get_action(action["id"])["status"] == "running"
+    assert store.get_run(run_id)["status"] != "failed"
+    assert store.get_run(run_id)["status"] in ("waiting", "ready", "generating")
+    assert not any(
+        m.get("role") == "system" and "HEARTBEAT" in m.get("content", "")
+        for m in store.get_run(run_id)["messages"]
+    )
+
+    await eng.complete_action(action["id"], result={"server": "stopped"})
+    done = await eng.wait_for_run(run_id, timeout=3)
+    assert done["status"] == "done"
+    assert "stopped" in (done["result"] or "")
 
 
 @pytest.mark.asyncio

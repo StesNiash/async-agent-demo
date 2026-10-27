@@ -231,10 +231,10 @@ class Store:
     def claim_due_heartbeats(self, now: float | None = None) -> list[dict]:
         """Wake every waiting run whose heartbeat is due.
 
-        The wake is an in-place update of the same run. Pending calls first get an
-        interim tool message, then the heartbeat system message is appended.
-        The action itself is untouched: this is a timeout of the agent's wait,
-        not of the tool.
+        The wake is an in-place update of the same run. Pending calls first get
+        an interim tool message; no synthetic heartbeat text is added to the
+        transcript. The action itself is untouched: this is a timeout of the
+        agent's wait, not of the tool.
         """
         now = time.time() if now is None else now
         woken: list[dict] = []
@@ -417,11 +417,12 @@ class Store:
                     {"content": content, "reason": reason}, now,
                 )
             else:
+                # Keep the heartbeat wording generic. The model should not need
+                # to know which action is pending; it has the exact transcript.
+                # The message also gives the model a fresh turn to speak instead
+                # of silently re-running the last user request.
                 waited = max(0.0, now - (run["wait_started_at"] or now))
-                content = (
-                    "HEARTBEAT: action is still running; no result yet. "
-                    f"waited={waited:.1f}s; pending={len(pending)}"
-                )
+                content = f"No new events in the last {waited:.1f}s."
                 messages.append({"role": "system", "content": content})
                 self._append_memory_tx(run_id, "system", content, now)
                 self._append_event_tx(

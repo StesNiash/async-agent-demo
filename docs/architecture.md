@@ -84,10 +84,16 @@ run cannot simply insert a user message. Instead, the same run gets an
 ```text
 assistant(tool_calls=[call_1])
 tool(call_1, {"status":"in_progress","progress":{...}})
-system(HEARTBEAT: still waiting)
+system(No new events in the last 1.5s.)
 ```
 
-or, for a notification:
+The heartbeat text is intentionally generic: it names no tool and no action.
+The model has the exact history and the interim tool result. A system message is
+kept because an empty wake can make a model repeat the last user request and
+issue the same tool call again. This also covers a bash-launched server that
+never returns an exit code: the action stays `running` and the run keeps waiting.
+
+For a notification:
 
 ```text
 assistant(tool_calls=[call_1])
@@ -125,8 +131,8 @@ represented as a second tool result for the same call.
    tool message; a later final result is independent `system` text.
 4. **Worker never waits on a tool.** The worker only claims ready runs. A single
    long action does not occupy the worker.
-5. **Heartbeat does not mutate actions.** It only wakes the run and records
-   progress already reported by the action.
+5. **Heartbeat does not mutate actions.** It wakes the run, appends an interim
+   tool result if needed, and adds only the generic "No new events" system text.
 6. **Append-only memory.** `memory` and `events` are read models for UI/debugging;
    old records are not rewritten by compaction.
 7. **State is durable.** A restart can recover a run because the transcript,
@@ -146,8 +152,8 @@ represented as a second tool result for the same call.
 ```text
 app/store.py   persistence: runs, actions, events, memory
 app/engine.py  claim → model → park/resume, heartbeat, notifications
-app/model.py   deterministic LLM stand-in
-app/tools.py   mock auto/manual/fail/multi tools
+app/model.py   mock or OpenAI-compatible model client
+app/tools.py   mock auto/manual/server/fail/multi tools
 app/main.py    HTTP API, SSE, UI
 bench/         scheduler-level benchmark
 tests/         protocol and API tests

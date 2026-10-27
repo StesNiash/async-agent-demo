@@ -239,7 +239,7 @@ HTML = """<!doctype html>
   <p>Run pauses after a tool call. Result or heartbeat resumes the exact transcript. Tools have no timeout.</p>
 
   <div class="row">
-    <input id="message" type="text" value="compile 4" placeholder="compile 4 | echo hello | manual | fail | multi">
+    <input id="message" type="text" value="compile 4" placeholder="compile 4 | echo hello | manual | server | fail | multi">
     <button id="create">Создать run</button>
     <button id="refresh" disabled>Обновить</button>
   </div>
@@ -318,16 +318,17 @@ async function refresh() {
       <div class="id">action ${esc(a.id)} · call ${esc(a.call_id)} · mode ${esc(a.mode)}</div>
       <pre>${esc(JSON.stringify(a.result ?? a.error ?? a.args, null, 2))}</pre>
       ${a.status === "running" || a.status === "queued"
-        ? `<button class="ok" onclick="completeAction('${esc(a.id)}')">Завершить вручную</button>` : ""}</div>`;
+        ? `<button class="ok" onclick="completeAction('${esc(a.id)}', '${esc(a.tool)}')">${a.tool === "mock_server" ? "Остановить сервер" : "Завершить вручную"}</button>` : ""}</div>`;
   }).join("") || "<p>нет действий</p>";
   $("#events").innerHTML = (d.events || []).slice().reverse().map(e =>
     `<div class="msg"><div class="role">${esc(e.type)} #${e.id}</div><pre>${esc(JSON.stringify(e.payload, null, 2))}</pre></div>`
   ).join("") || "<p>нет событий</p>";
 }
-async function completeAction(id) {
+async function completeAction(id, tool) {
+  const result = tool === "mock_server" ? {server: "stopped"} : {manual: "completed from UI"};
   await api("/actions/" + encodeURIComponent(id) + "/complete", {
     method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({result: {manual: "completed from UI"}})
+    body: JSON.stringify({result})
   });
   await refresh();
 }

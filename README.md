@@ -70,13 +70,15 @@ Invoke-RestMethod http://127.0.0.1:8100/health
 - `echo hello` — быстрый auto-tool;
 - `compile 4` — инструмент работает 4 секунды; раз в 1.5 секунды приходит heartbeat, run просыпается, пишет progress и снова ждёт;
 - `manual` — инструмент не завершается сам; нажми **«Завершить вручную»**;
+- `server` — сервер, запущенный через bash: action остаётся `running` без exit code, пока его не остановят через API; heartbeat продолжает будить run;
 - `fail` — инструмент завершается ошибкой, run продолжается;
 - `multi` — два параллельных tool call; run ждёт оба;
 - **notification во время ожидания**: нажми «Кинуть уведомление», пока `manual`/`compile` ещё выполняется. Уведомление будит **тот же run**: для pending tool call добавляется interim `tool`-результат «в процессе», затем уведомление как `user`-сообщение; run отвечает и снова ждёт action.
 
 С реальной моделью лучше явно называть инструмент, например:
-`Use mock_compile with seconds=8, then tell me what happened.` или
-`Start mock_manual; I will send a notification while it runs.`
+`Use mock_compile with seconds=8, then tell me what happened.`,
+`Start mock_manual; I will send a notification while it runs.` или
+`Start mock_server on port 8000; it will not return an exit code.`
 
 Через API:
 
@@ -143,7 +145,7 @@ docs/          architecture, invariants, benchmark, UI screenshot
 2. `actions` живут отдельно от run. Action не имеет timeout.
 3. `wake_at` — таймаут ожидания run, а не инструмента.
 4. Обычный результат action добавляет `tool`-сообщение с `tool_call_id`. Если у call уже был interim result, поздний финальный результат добавляется независимым `system`-текстом `TOOL RESULT (late)`.
-5. Heartbeat сначала добавляет interim `tool`-результат для pending call, затем `system`-сообщение. Action при этом не трогается.
+5. Heartbeat сначала добавляет interim `tool`-результат для pending call, затем универсальное `system`-сообщение `No new events in the last Ns.` Без action-specific формулировок; action при этом не трогается.
 6. Уведомление во время ожидания будит тот же run: сначала interim `tool`-результат, затем `user`-сообщение.
 7. Старые `memory`-записи не переписываются.
 

@@ -13,6 +13,7 @@ TOOL_SPECS = {
     "mock_echo": {"mode": "auto", "default_delay": 0.2},
     "mock_compile": {"mode": "auto", "default_delay": 5.0},
     "mock_manual": {"mode": "manual", "default_delay": None},
+    "mock_server": {"mode": "manual", "default_delay": None},
     "mock_fail": {"mode": "auto", "default_delay": 0.3},
 }
 
@@ -72,6 +73,28 @@ def openai_tools() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "mock_server",
+                "description": (
+                    "Start a long-lived server process (for example a bash-launched "
+                    "server) that never returns an exit code. It stays running until "
+                    "explicitly stopped through the API."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Command that started the server.",
+                        },
+                        "port": {"type": "integer", "description": "Server port."},
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "mock_fail",
                 "description": "Simulate a tool failure.",
                 "parameters": {"type": "object", "properties": {}, "required": []},
@@ -92,6 +115,10 @@ def describe_tools() -> dict[str, dict]:
         },
         "mock_manual": {
             "description": "Never completes on its own; complete it through the API.",
+            "mode": "manual",
+        },
+        "mock_server": {
+            "description": "A long-lived server with no exit code; stops through the API.",
             "mode": "manual",
         },
         "mock_fail": {
@@ -132,6 +159,23 @@ def action_spec(name: str, args: dict | None) -> dict:
             "mode": "manual",
             "delay": None,
             "result": {"tool": name, "manual": str(args.get("label", "manual"))},
+            "error": None,
+        }
+    if name == "mock_server":
+        command = str(args.get("command", "python -m http.server"))
+        try:
+            port = int(args.get("port", 8000))
+        except (TypeError, ValueError):
+            port = 8000
+        return {
+            "mode": "manual",
+            "delay": None,
+            "result": {
+                "tool": name,
+                "status": "stopped",
+                "command": command,
+                "port": port,
+            },
             "error": None,
         }
     if name == "mock_fail":

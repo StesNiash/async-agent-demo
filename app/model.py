@@ -24,6 +24,10 @@ interim tool result with status=in_progress, tell the user the tool is still
 running instead of claiming it finished. When the final result arrives as
 independent text (TOOL RESULT (late)), summarize it for the user.
 
+A system message like "No new events in the last 1.5s" is a heartbeat, not a
+new user request. Do not repeat an already pending tool call just because you
+see it; report the current status or stay brief.
+
 Be concise and do not invent tool results."""
 
 
@@ -194,9 +198,12 @@ class MockModel:
                 "tool_calls": [],
             }
 
-        if role == "system" and "HEARTBEAT" in (last.get("content") or ""):
+        if role == "system" and (
+            "No new events" in (last.get("content") or "")
+            or "HEARTBEAT" in (last.get("content") or "")
+        ):
             return {
-                "content": "Ещё жду результат инструмента. Продолжаю ждать.",
+                "content": "No new events; still waiting for the pending tool result.",
                 "tool_calls": [],
             }
 
@@ -228,6 +235,11 @@ class MockModel:
                     _call("mock_echo", text="from-multi"),
                     _call("mock_manual", label="multi-manual"),
                 ],
+            }
+        if "server" in lower:
+            return {
+                "content": "",
+                "tool_calls": [_call("mock_server", command=text[:120])],
             }
         if "manual" in lower:
             return {
