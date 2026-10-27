@@ -106,6 +106,94 @@ async def test_heartbeat_wakes_run_but_does_not_timeout_tool(engine):
 
 
 @pytest.mark.asyncio
+async def test_unchanged_heartbeat_is_skipped_with_backoff(engine):
+    eng, store = engine
+    run_id = await eng.create_run("manual", heartbeat_interval=0.08)
+    await wait_until(lambda: [e for e in store.get_events(run_id) if e["type"] == "heartbeat"])
+
+    skipped = await wait_until(
+        lambda: [e for e in store.get_events(run_id) if e["type"] == "heartbeat_skipped"]
+    )
+    await wait_until(
+        lambda: store.get_run(run_id)["status"] == "waiting"
+        and store.get_run(run_id)["heartbeat_misses"] >= 1
+    )
+    calls_before = len([e for e in store.get_events(run_id) if e["type"] == "llm_started"])
+    await asyncio.sleep(0.2)
+    calls_after = len([e for e in store.get_events(run_id) if e["type"] == "llm_started"])
+    run = store.get_run(run_id)
+    assert run["status"] == "waiting"
+    assert run["heartbeat_misses"] >= 1
+    assert run["wake_at"] is not None and run["wake_at"] > time.time()
+    assert calls_after == calls_before
+    assert skipped[-1]["payload"]["next_wake_s"] > 0.08
+
+    await eng.complete_action(store.get_actions(run_id)[0]["id"], result={"manual": "ok"})
+    done = await eng.wait_for_run(run_id, timeout=3)
+    assert done["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_progress_change_wakes_heartbeat_with_progress_update(engine):
+    eng, store = engine
+    run_id = await eng.create_run("manual", heartbeat_interval=0.08)
+    await wait_until(
+        lambda: [e for e in store.get_events(run_id) if e["type"] == "tool_interim"]
+    )
+    action = store.get_actions(run_id)[0]
+    store.set_action_progress(action["id"], {"partial_output": "half done"})
+    await wait_until(
+        lambda: [e for e in store.get_events(run_id) if e["type"] == "progress_update"]
+    )
+    run = store.get_run(run_id)
+    assert any(
+        m.get("role") == "system" and "Progress update" in m.get("content", "")
+        for m in run["messages"]
+    )
+    await eng.complete_action(action["id"], result={"manual": "ok"})
+    done = await eng.wait_for_run(run_id, timeout=3)
+    assert done["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_tool_call_is_not_started_twice(tmp_path):
+    class RepeatingModel:
+        async def complete(self, messages):
+            last = messages[-1]
+            text = last.get("content") or ""
+            if "TOOL RESULT (late)" in text:
+                return {"content": "finished", "tool_calls": []}
+            call = {
+                "id": "call_repeat_" + str(len(messages)),
+                "name": "mock_manual",
+                "args": {"label": "same"},
+            }
+            if last.get("role") == "system" and "No new events" in text:
+                return {"content": "", "tool_calls": [call]}
+            return {"content": "", "tool_calls": [call]}
+
+    store = Store(tmp_path / "repeat.db")
+    eng = RunEngine(store, RepeatingModel(), heartbeat_interval=30, poll_interval=0.01)
+    await eng.start()
+    try:
+        run_id = await eng.create_run("manual", heartbeat_interval=0.08)
+        await wait_until(lambda: store.get_run(run_id)["status"] == "waiting")
+        await wait_until(lambda: [e for e in store.get_events(run_id) if e["type"] == "heartbeat"])
+        await wait_until(
+            lambda: [e for e in store.get_events(run_id) if e["type"] == "duplicate_tool_call_ignored"]
+        )
+        assert len(store.get_actions(run_id)) == 1
+        action = store.get_actions(run_id)[0]
+        await eng.complete_action(action["id"], result={"manual": "ok"})
+        done = await eng.wait_for_run(run_id, timeout=3)
+        assert done["status"] == "done"
+        assert len(store.get_actions(run_id)) == 1
+    finally:
+        await eng.stop()
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_server_action_stays_running_without_exit_code(engine):
     eng, store = engine
     run_id = await eng.create_run("start a server via bash", heartbeat_interval=0.08)

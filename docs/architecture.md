@@ -88,10 +88,20 @@ system(No new events in the last 1.5s.)
 ```
 
 The heartbeat text is intentionally generic: it names no tool and no action.
-The model has the exact history and the interim tool result. A system message is
-kept because an empty wake can make a model repeat the last user request and
-issue the same tool call again. This also covers a bash-launched server that
-never returns an exit code: the action stays `running` and the run keeps waiting.
+The first heartbeat also gets an interim tool result. Later heartbeats compare a
+signature of pending action status/progress with the last wake:
+
+- unchanged: append a `heartbeat_skipped` event, schedule the next wake with
+  exponential backoff (capped at 300s), and do **not** call the LLM;
+- changed: append a `Progress update: ...` system message when an interim result
+  already exists, then the generic heartbeat message and wake the run.
+
+A system message is kept for real wakes because an empty wake can make a model
+repeat the last user request and issue the same tool call again. The engine also
+ignores a duplicate pending tool call (same tool and args) instead of starting a
+second action. This covers a bash-launched server that never returns an exit
+code: the action stays `running`, heartbeat does not complete it, and the run
+waits for an explicit stop.
 
 For a notification:
 
@@ -132,10 +142,14 @@ represented as a second tool result for the same call.
 4. **Worker never waits on a tool.** The worker only claims ready runs. A single
    long action does not occupy the worker.
 5. **Heartbeat does not mutate actions.** It wakes the run, appends an interim
-   tool result if needed, and adds only the generic "No new events" system text.
-6. **Append-only memory.** `memory` and `events` are read models for UI/debugging;
+   tool result if needed, and adds only the generic "No new events" system text
+   when something changed. Unchanged heartbeats are skipped with backoff.
+6. **No duplicate pending action.** If the model repeats the same tool call with
+   the same args while it is pending, the engine keeps one action and records
+   `duplicate_tool_call_ignored`.
+7. **Append-only memory.** `memory` and `events` are read models for UI/debugging;
    old records are not rewritten by compaction.
-7. **State is durable.** A restart can recover a run because the transcript,
+8. **State is durable.** A restart can recover a run because the transcript,
    pending calls and action rows are persisted before the process yields.
 
 ## Non-goals and limits

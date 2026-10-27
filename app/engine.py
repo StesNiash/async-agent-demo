@@ -188,6 +188,67 @@ class RunEngine:
 
             content = response.get("content") or ""
             tool_calls = response.get("tool_calls") or []
+
+            pending_actions = [
+                action
+                for action in (
+                    self.store.get_action(action_id)
+                    for action_id in current["pending_calls"].values()
+                )
+                if action is not None
+            ]
+
+            def args_key(value) -> str:
+                return json.dumps(value or {}, sort_keys=True, ensure_ascii=False)
+
+            accepted: list[dict] = []
+            duplicates: list[tuple[dict, dict]] = []
+            for call in tool_calls:
+                match = next(
+                    (
+                        action
+                        for action in pending_actions
+                        if action["tool"] == call["name"]
+                        and args_key(action["args"]) == args_key(call.get("args"))
+                    ),
+                    None,
+                )
+                if match is None:
+                    accepted.append(call)
+                else:
+                    duplicates.append((call, match))
+
+            for call, action in duplicates:
+                self.store.append_event(
+                    run_id,
+                    "duplicate_tool_call_ignored",
+                    {
+                        "call_id": call["id"],
+                        "tool": call["name"],
+                        "action_id": action["id"],
+                    },
+                )
+
+            if duplicates and not accepted:
+                # The model re-requested work that is already pending. Treat it
+                # as progress, not as a second action.
+                progress = content or (
+                    "The requested tool is already running; waiting for its result."
+                )
+                messages.append({"role": "assistant", "content": progress})
+                self.store.append_memory(run_id, "assistant", progress)
+                self.store.append_event(
+                    run_id, "assistant_progress", {"content": progress}
+                )
+                self.store.update_run(
+                    run_id,
+                    messages=messages,
+                    status="waiting",
+                    wake_at=time.time() + current["heartbeat_interval"],
+                )
+                return
+
+            tool_calls = accepted
             assistant = {"role": "assistant", "content": content}
             if tool_calls:
                 assistant["tool_calls"] = [

@@ -5,7 +5,7 @@
 - агент вызывает инструмент и **перестаёт генерировать**;
 - run сохраняет точный `messages` (включая `assistant.tool_calls`);
 - результат инструмента **будит** run и продолжает тот же transcript;
-- heartbeat будит run, если результата всё ещё нет;
+- heartbeat будит run только при изменении progress/status, иначе backoff без LLM-вызова;
 - у инструмента **нет таймаута**;
 - память — append-only, без compaction;
 - снаружи HTTP-запрос может ждать результата, но worker не блокируется на инструменте.
@@ -68,9 +68,9 @@ Invoke-RestMethod http://127.0.0.1:8100/health
 В UI:
 
 - `echo hello` — быстрый auto-tool;
-- `compile 4` — инструмент работает 4 секунды; раз в 1.5 секунды приходит heartbeat, run просыпается, пишет progress и снова ждёт;
+- `compile 4` — инструмент работает 4 секунды; первый heartbeat будит run, затем heartbeat пропускается без LLM-вызова, если progress не менялся (с backoff);
 - `manual` — инструмент не завершается сам; нажми **«Завершить вручную»**;
-- `server` — сервер, запущенный через bash: action остаётся `running` без exit code, пока его не остановят через API; heartbeat продолжает будить run;
+- `server` — сервер, запущенный через bash: action остаётся `running` без exit code, пока его не остановят через API; heartbeat его не завершает;
 - `fail` — инструмент завершается ошибкой, run продолжается;
 - `multi` — два параллельных tool call; run ждёт оба;
 - **notification во время ожидания**: нажми «Кинуть уведомление», пока `manual`/`compile` ещё выполняется. Уведомление будит **тот же run**: для pending tool call добавляется interim `tool`-результат «в процессе», затем уведомление как `user`-сообщение; run отвечает и снова ждёт action.
@@ -83,7 +83,7 @@ Invoke-RestMethod http://127.0.0.1:8100/health
 Через API:
 
 ```powershell
-$body = @{ message = "manual"; heartbeat_interval = 1.5 } | ConvertTo-Json
+$body = @{ message = "manual"; heartbeat_interval = 10 } | ConvertTo-Json
 $run = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8100/runs `
   -ContentType 'application/json' -Body $body
 
@@ -119,7 +119,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"progress":{"partial_output":"Compiling module A..."}}'
 ```
 
-Этот `progress` попадёт в interim `tool`-результат при следующем heartbeat/notification.
+Первый heartbeat кладёт `progress` в interim `tool`-результат; если interim уже есть, изменение progress на следующем heartbeat добавляет отдельное `system`-сообщение `Progress update: ...`.
 
 SSE-поток событий:
 
@@ -132,8 +132,8 @@ GET /runs/{run_id}/events
 ```text
 app/store.py   SQLite: runs, actions, events, memory
 app/engine.py  worker, pause/resume, heartbeat, action completion
-app/model.py   детерминированная mock-модель
-app/tools.py   mock_echo, mock_compile, mock_manual, mock_fail
+app/model.py   mock- или OpenAI-compatible модель
+app/tools.py   mock_echo, mock_compile, mock_manual, mock_server, mock_fail, mock_multi
 app/main.py    FastAPI + SSE + минимальный UI
 bench/         scheduler-level benchmark
 docs/          architecture, invariants, benchmark, UI screenshot
@@ -145,7 +145,7 @@ docs/          architecture, invariants, benchmark, UI screenshot
 2. `actions` живут отдельно от run. Action не имеет timeout.
 3. `wake_at` — таймаут ожидания run, а не инструмента.
 4. Обычный результат action добавляет `tool`-сообщение с `tool_call_id`. Если у call уже был interim result, поздний финальный результат добавляется независимым `system`-текстом `TOOL RESULT (late)`.
-5. Heartbeat сначала добавляет interim `tool`-результат для pending call, затем универсальное `system`-сообщение `No new events in the last Ns.` Без action-specific формулировок; action при этом не трогается.
+5. Heartbeat сначала добавляет interim `tool`-результат для pending call. Если progress/status с прошлого пробуждения не изменились, run остаётся waiting, пишется `heartbeat_skipped` и включается backoff без LLM-вызова. Если изменились — универсальное `system`-сообщение `No new events in the last Ns.` и новый turn. Action при этом не трогается.
 6. Уведомление во время ожидания будит тот же run: сначала interim `tool`-результат, затем `user`-сообщение.
 7. Старые `memory`-записи не переписываются.
 

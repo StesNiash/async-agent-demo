@@ -284,7 +284,7 @@ async function createRun() {
   if (!message) return;
   const d = await api("/runs", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({message, heartbeat_interval: 1.5})
+    body: JSON.stringify({message, heartbeat_interval: 10})
   });
   current = d.run_id;
   $("#run-id").textContent = current;

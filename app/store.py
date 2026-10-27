@@ -55,6 +55,8 @@ class Store:
                 wake_at REAL,
                 heartbeat_interval REAL NOT NULL DEFAULT 2.0,
                 heartbeat_count INTEGER NOT NULL DEFAULT 0,
+                heartbeat_misses INTEGER NOT NULL DEFAULT 0,
+                last_wake_signature TEXT,
                 result TEXT,
                 error TEXT,
                 created_at REAL NOT NULL,
@@ -104,6 +106,11 @@ class Store:
             ("kind", "ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'"),
             ("parent_run_id", "ALTER TABLE runs ADD COLUMN parent_run_id TEXT"),
             ("progress", "ALTER TABLE actions ADD COLUMN progress TEXT"),
+            (
+                "heartbeat_misses",
+                "ALTER TABLE runs ADD COLUMN heartbeat_misses INTEGER NOT NULL DEFAULT 0",
+            ),
+            ("last_wake_signature", "ALTER TABLE runs ADD COLUMN last_wake_signature TEXT"),
         ):
             try:
                 self._conn.execute(ddl)
@@ -377,6 +384,8 @@ class Store:
             now = time.time()
             messages = run["messages"]
             pending = dict(run["pending_calls"])
+            signature = self._pending_signature(pending)
+            interim_added = False
             text_by_call = {
                 m.get("tool_call_id")
                 for m in messages
@@ -400,6 +409,7 @@ class Store:
                     "tool_call_id": call_id,
                     "content": content,
                 })
+                interim_added = True
                 self._append_memory_tx(run_id, "tool", content, now)
                 self._append_event_tx(
                     run_id,
@@ -417,26 +427,78 @@ class Store:
                     {"content": content, "reason": reason}, now,
                 )
             else:
+                waited = max(0.0, now - (run["wait_started_at"] or now))
+                changed = signature != run.get("last_wake_signature")
+                if not interim_added and not changed:
+                    # Nothing changed since the previous wake. Keep the run
+                    # waiting; do not spend an LLM call on a no-op heartbeat.
+                    misses = int(run.get("heartbeat_misses") or 0) + 1
+                    delay = self._heartbeat_backoff(run, misses)
+                    self._conn.execute(
+                        "UPDATE runs SET wake_at = ?, heartbeat_misses = ?, "
+                        "heartbeat_count = heartbeat_count + 1, updated_at = ? "
+                        "WHERE id = ?",
+                        (now + delay, misses, now, run_id),
+                    )
+                    self._append_event_tx(
+                        run_id,
+                        "heartbeat_skipped",
+                        {
+                            "waited_s": waited,
+                            "pending": len(pending),
+                            "next_wake_s": delay,
+                            "misses": misses,
+                            "reason": reason,
+                        },
+                        now,
+                    )
+                    return None
+
+                if changed and not interim_added:
+                    updates = [
+                        {
+                            "action_id": action_id,
+                            "progress": (self.get_action(action_id) or {}).get("progress"),
+                        }
+                        for action_id in pending.values()
+                        if (self.get_action(action_id) or {}).get("progress")
+                    ]
+                    if updates:
+                        progress_text = "Progress update: " + json.dumps(
+                            updates, ensure_ascii=False
+                        )
+                        messages.append({"role": "system", "content": progress_text})
+                        self._append_memory_tx(run_id, "system", progress_text, now)
+                        self._append_event_tx(
+                            run_id, "progress_update", {"updates": updates}, now
+                        )
+
                 # Keep the heartbeat wording generic. The model should not need
                 # to know which action is pending; it has the exact transcript.
                 # The message also gives the model a fresh turn to speak instead
                 # of silently re-running the last user request.
-                waited = max(0.0, now - (run["wait_started_at"] or now))
                 content = f"No new events in the last {waited:.1f}s."
                 messages.append({"role": "system", "content": content})
                 self._append_memory_tx(run_id, "system", content, now)
                 self._append_event_tx(
                     run_id, "heartbeat",
-                    {"waited_s": waited, "pending": len(pending), "reason": reason},
+                    {
+                        "waited_s": waited,
+                        "pending": len(pending),
+                        "reason": reason,
+                        "signature_changed": signature != run.get("last_wake_signature"),
+                    },
                     now,
                 )
 
             self._conn.execute(
                 "UPDATE runs SET status = 'ready', wake_at = NULL, messages = ?, "
-                "heartbeat_count = heartbeat_count + ?, updated_at = ? WHERE id = ?",
+                "heartbeat_count = heartbeat_count + ?, heartbeat_misses = 0, "
+                "last_wake_signature = ?, updated_at = ? WHERE id = ?",
                 (
                     json.dumps(messages, ensure_ascii=False),
                     0 if notification is not None else 1,
+                    signature,
                     now,
                     run_id,
                 ),
@@ -578,6 +640,22 @@ class Store:
         return [dict(row) for row in rows]
 
     # ----- internal helpers --------------------------------------------
+
+    def _pending_signature(self, pending: dict[str, str]) -> str:
+        parts = []
+        for call_id, action_id in sorted(pending.items()):
+            action = self.get_action(action_id) or {}
+            parts.append({
+                "call_id": call_id,
+                "action_id": action_id,
+                "status": action.get("status"),
+                "progress": action.get("progress"),
+            })
+        return json.dumps(parts, sort_keys=True, ensure_ascii=False)
+
+    def _heartbeat_backoff(self, run: dict, misses: int) -> float:
+        base = max(0.05, float(run["heartbeat_interval"]))
+        return min(300.0, base * (2 ** min(misses, 6)))
 
     def _append_event_tx(self, run_id: str, type_: str, payload: dict, now: float) -> int:
         cur = self._conn.execute(
