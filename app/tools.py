@@ -17,6 +17,69 @@ TOOL_SPECS = {
 }
 
 
+def openai_tools() -> list[dict]:
+    """Tool schemas for an OpenAI-compatible chat completions API."""
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "mock_echo",
+                "description": "Return the supplied text after a short mock delay.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to echo."},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "mock_compile",
+                "description": "Simulate a long compile. The action stays running for seconds.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "seconds": {
+                            "type": "number",
+                            "description": "Compile duration, 0-60 seconds.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "mock_manual",
+                "description": (
+                    "Start a long-running action that never completes on its own. "
+                    "Use it when the user asks to test waiting, heartbeats, or notifications."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Human-readable label."},
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "mock_fail",
+                "description": "Simulate a tool failure.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+    ]
+
+
 def describe_tools() -> dict[str, dict]:
     return {
         "mock_echo": {

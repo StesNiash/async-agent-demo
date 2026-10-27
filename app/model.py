@@ -12,6 +12,20 @@ import json
 import re
 import uuid
 
+import httpx
+
+from .tools import openai_tools
+
+SYSTEM_PROMPT = """You are an agent running inside a resumable execution loop.
+
+When a task needs a tool, call one of the provided mock tools. A tool call may
+pause the run for seconds or minutes; that is expected. If you receive an
+interim tool result with status=in_progress, tell the user the tool is still
+running instead of claiming it finished. When the final result arrives as
+independent text (TOOL RESULT (late)), summarize it for the user.
+
+Be concise and do not invent tool results."""
+
 
 def _call(name: str, **args) -> dict:
     return {
@@ -39,6 +53,109 @@ def _tool_summary(messages: list[dict]) -> str:
         else:
             parts.append(json.dumps(data, ensure_ascii=False))
     return "; ".join(parts)
+
+
+def _openai_messages(messages: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            item: dict = {
+                "role": "assistant",
+                "content": message.get("content") or "",
+            }
+            if message.get("tool_calls"):
+                item["tool_calls"] = [
+                    {
+                        "id": call.get("id") or "call_" + uuid.uuid4().hex[:10],
+                        "type": "function",
+                        "function": {
+                            "name": call.get("name"),
+                            "arguments": json.dumps(
+                                call.get("args") or {}, ensure_ascii=False
+                            ),
+                        },
+                    }
+                    for call in message["tool_calls"]
+                ]
+            out.append(item)
+        elif role == "tool":
+            out.append({
+                "role": "tool",
+                "tool_call_id": message.get("tool_call_id"),
+                "content": message.get("content") or "",
+            })
+        else:
+            out.append({
+                "role": role,
+                "content": message.get("content") or "",
+            })
+    return out
+
+
+class OpenAIModel:
+    """Minimal client for any OpenAI-compatible chat completions endpoint."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        temperature: float = 0.2,
+        timeout: float = 120.0,
+        client: httpx.AsyncClient | None = None,
+    ):
+        url = base_url.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url += "/chat/completions"
+        self.url = url
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+        self._client = client or httpx.AsyncClient(timeout=timeout)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def complete(self, messages: list[dict]) -> dict:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *_openai_messages(messages),
+            ],
+            "temperature": self.temperature,
+            "tools": openai_tools(),
+            "tool_choice": "auto",
+        }
+        response = await self._client.post(
+            self.url,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"LLM HTTP {response.status_code}: {response.text[:500]}"
+            )
+        data = response.json()
+        message = data["choices"][0]["message"]
+        tool_calls = []
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            raw_args = function.get("arguments") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except (TypeError, ValueError):
+                args = {"_raw_arguments": raw_args}
+            tool_calls.append({
+                "id": call.get("id") or "call_" + uuid.uuid4().hex[:10],
+                "name": function.get("name"),
+                "args": args or {},
+            })
+        return {
+            "content": message.get("content") or "",
+            "tool_calls": tool_calls,
+        }
 
 
 class MockModel:

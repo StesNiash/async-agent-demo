@@ -18,8 +18,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .config import build_model
 from .engine import RunEngine
-from .model import MockModel
 from .store import Store
 from .tools import describe_tools
 
@@ -49,11 +49,13 @@ class ProgressRequest(BaseModel):
 def create_app(
     db_path: str | Path | None = None,
     heartbeat_interval: float = 2.0,
+    model=None,
 ) -> FastAPI:
     if db_path is None:
         db_path = os.getenv("DEMO_DB", "data/demo.db")
     store = Store(db_path)
-    engine = RunEngine(store, MockModel(), heartbeat_interval=heartbeat_interval)
+    model = model or build_model()
+    engine = RunEngine(store, model, heartbeat_interval=heartbeat_interval)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -62,15 +64,23 @@ def create_app(
             yield
         finally:
             await engine.stop()
+            if hasattr(model, "close"):
+                await model.close()
             store.close()
 
     app = FastAPI(title="async-agent-demo", lifespan=lifespan)
     app.state.store = store
     app.state.engine = engine
+    app.state.model = model
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "db": str(db_path)}
+        return {
+            "status": "ok",
+            "db": str(db_path),
+            "model": type(model).__name__,
+            "model_name": getattr(model, "model", None),
+        }
 
     @app.get("/tools")
     async def tools():

@@ -33,7 +33,9 @@ flowchart LR
 - **Action** — a tool execution owned by a run. It has its own lifecycle and
   **no timeout**.
 - **Worker** — claims a ready run, calls the model, and then either finishes or
-  parks the run in `waiting`.
+  parks the run in `waiting`. The model can be the deterministic `MockModel`
+  (default) or `OpenAIModel` against any OpenAI-compatible chat completions
+  endpoint (DeepSeek, OpenAI, etc.). Both consume the same stored transcript.
 - **Heartbeat loop** — finds waiting runs whose `wake_at` is due and wakes them.
   This is a timeout of the **wait**, not of the tool.
 - **SQLite** — source of truth. The process can restart between steps; the
@@ -134,8 +136,9 @@ represented as a second tool result for the same call.
 
 - No mid-token pause/resume. Standard LLM APIs pause at a step boundary.
 - No distributed worker leases. The demo assumes one process.
-- No real model or real shell execution. The mock tools make the protocol
-  observable and deterministic.
+- No real shell execution. The mock tools make the protocol observable and
+  deterministic; the model itself can be a real OpenAI-compatible endpoint via
+  `.env`.
 - No production auth, tenancy or rate limiting.
 
 ## Files

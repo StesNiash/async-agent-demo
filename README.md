@@ -32,6 +32,37 @@ uvicorn app.main:app --reload --port 8100
 
 Открыть `http://127.0.0.1:8100/`.
 
+## Реальная LLM (DeepSeek / OpenAI-compatible)
+
+По умолчанию используется детерминированная mock-модель. Для реального API:
+
+```powershell
+Copy-Item .env.example .env
+# открой .env и заполни LLM_API_KEY
+```
+
+Для DeepSeek:
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-...
+```
+
+`.env` в `.gitignore`; в репозиторий попадает только `.env.example`.
+Перезапусти uvicorn и проверь:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8100/health
+```
+
+В ответе будет `model: OpenAIModel` и `model_name: deepseek-chat`. Для OpenAI
+или другого совместимого провайдера поменяй `LLM_BASE_URL`/`LLM_MODEL`.
+
+Если `LLM_API_KEY` пуст, сервер не падает: он пишет warning и использует
+`MockModel` (это видно в `/health`). После вставки ключа перезапусти uvicorn.
+
 ## Сценарии
 
 В UI:
@@ -42,6 +73,10 @@ uvicorn app.main:app --reload --port 8100
 - `fail` — инструмент завершается ошибкой, run продолжается;
 - `multi` — два параллельных tool call; run ждёт оба;
 - **notification во время ожидания**: нажми «Кинуть уведомление», пока `manual`/`compile` ещё выполняется. Уведомление будит **тот же run**: для pending tool call добавляется interim `tool`-результат «в процессе», затем уведомление как `user`-сообщение; run отвечает и снова ждёт action.
+
+С реальной моделью лучше явно называть инструмент, например:
+`Use mock_compile with seconds=8, then tell me what happened.` или
+`Start mock_manual; I will send a notification while it runs.`
 
 Через API:
 

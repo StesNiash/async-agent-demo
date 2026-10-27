@@ -189,7 +189,7 @@ async def test_memory_is_append_only(engine):
 
 
 def test_http_api_manual_completion(tmp_path):
-    app = create_app(tmp_path / "api.db", heartbeat_interval=0.1)
+    app = create_app(tmp_path / "api.db", heartbeat_interval=0.1, model=MockModel())
     with TestClient(app) as client:
         response = client.post("/runs", json={"message": "manual", "heartbeat_interval": 30})
         assert response.status_code == 200
@@ -220,7 +220,7 @@ def test_http_api_manual_completion(tmp_path):
 
 
 def test_http_api_notification_stays_in_same_run(tmp_path):
-    app = create_app(tmp_path / "notify.db", heartbeat_interval=0.1)
+    app = create_app(tmp_path / "notify.db", heartbeat_interval=0.1, model=MockModel())
     with TestClient(app) as client:
         run_id = client.post(
             "/runs", json={"message": "manual", "heartbeat_interval": 30}
